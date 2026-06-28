@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grounded — chat with your documents</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel-2: #1d212a; --line: #2a2f3a;
+    --ink: #e8eaed; --ink-dim: #9aa3b2; --ink-faint: #5f6878;
+    --accent: #6ee7b7; --accent-dim: #2f6f57; --user: #2b3140; --danger: #f8a4a4;
+    --radius: 14px;
+    --mono: 'SF Mono','JetBrains Mono','Fira Code',ui-monospace,monospace;
+    --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Inter,system-ui,sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(900px 500px at 80% -10%, rgba(110,231,183,0.06), transparent 60%), var(--bg);
+    color: var(--ink); font-family: var(--sans); height: 100vh; display: flex;
+    -webkit-font-smoothing: antialiased; overflow: hidden;
+  }
+  .sidebar { width: 290px; flex-shrink: 0; border-right: 1px solid var(--line); display: flex; flex-direction: column; background: rgba(0,0,0,0.15); }
+  .side-head { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+  .brand { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  .brand .dot { color: var(--accent); }
+  .side-sub { font-size: 11.5px; color: var(--ink-faint); margin-top: 3px; }
+  .lib-label { padding: 16px 20px 8px; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-faint); display: flex; justify-content: space-between; align-items: center; }
+  .lib-label .count { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--ink-dim); }
+  .doc-list { flex: 1; overflow-y: auto; padding: 0 12px; display: flex; flex-direction: column; gap: 6px; }
+  .doc { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px; display: flex; align-items: center; gap: 9px; font-size: 13px; }
+  .doc .ic { color: var(--accent); flex-shrink: 0; width: 15px; height: 15px; }
+  .doc .meta { flex: 1; min-width: 0; }
+  .doc .name { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .doc .chunks { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); margin-top: 2px; }
+  .doc .del { background: none; border: none; color: var(--ink-faint); cursor: pointer; padding: 4px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center; transition: color 0.15s, background 0.15s; }
+  .doc .del:hover { color: var(--danger); background: rgba(248,164,164,0.1); }
+  .doc .del svg { width: 14px; height: 14px; }
+  .doc-empty { padding: 20px; text-align: center; color: var(--ink-faint); font-size: 12.5px; line-height: 1.6; }
+  .upload-zone { margin: 12px; border: 1.5px dashed var(--line); border-radius: 12px; padding: 18px 14px; text-align: center; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent-dim); background: rgba(110,231,183,0.04); }
+  .upload-zone .up-ic { color: var(--ink-dim); margin-bottom: 7px; }
+  .upload-zone .up-ic svg { width: 20px; height: 20px; }
+  .upload-zone .up-main { font-size: 12.5px; color: var(--ink-dim); }
+  .upload-zone .up-sub { font-size: 11px; color: var(--ink-faint); margin-top: 3px; }
+  .upload-zone.busy { pointer-events: none; opacity: 0.7; }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .scroll { flex: 1; overflow-y: auto; padding: 28px 24px 8px; }
+  .thread { max-width: 740px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
+  .turn { display: flex; flex-direction: column; gap: 9px; }
+  .who { font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); }
+  .bubble-user { align-self: flex-end; background: var(--user); border: 1px solid var(--line); padding: 12px 16px; border-radius: var(--radius) var(--radius) 4px var(--radius); max-width: 80%; font-size: 15px; line-height: 1.5; }
+  .answer { background: var(--panel); border: 1px solid var(--line); border-left: 2px solid var(--accent); padding: 15px 18px; border-radius: 4px var(--radius) var(--radius) var(--radius); font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+  .sources { margin-top: 4px; }
+  .sources summary { cursor: pointer; list-style: none; font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.04em; color: var(--accent); display: inline-flex; align-items: center; gap: 7px; padding: 4px 0; user-select: none; }
+  .sources summary::-webkit-details-marker { display: none; }
+  .sources summary::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .sources summary:hover { color: #9cf3cf; }
+  .source-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .source { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; font-size: 13px; line-height: 1.55; color: var(--ink-dim); white-space: pre-wrap; }
+  .source .num { font-family: var(--mono); font-size: 10.5px; color: var(--accent); display: block; margin-bottom: 5px; letter-spacing: 0.05em; }
+  .thinking { display: inline-flex; gap: 5px; padding: 4px 2px; }
+  .thinking span { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); animation: pulse 1.2s ease-in-out infinite; }
+  .thinking span:nth-child(2) { animation-delay: 0.2s; }
+  .thinking span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse { 0%,60%,100% { opacity: 0.25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+  .empty { max-width: 740px; margin: 8vh auto 0; text-align: center; color: var(--ink-faint); }
+  .empty h1 { font-size: 22px; font-weight: 600; color: var(--ink); letter-spacing: -0.02em; margin-bottom: 10px; }
+  .empty p { font-size: 14px; line-height: 1.6; margin-bottom: 26px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 9px; justify-content: center; }
+  .chip { font-size: 13px; color: var(--ink-dim); background: var(--panel); border: 1px solid var(--line); padding: 8px 13px; border-radius: 999px; cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+  .chip:hover { border-color: var(--accent-dim); color: var(--ink); }
+  .composer-wrap { border-top: 1px solid var(--line); padding: 16px 24px 22px; background: var(--bg); }
+  .composer { max-width: 740px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 8px 8px 16px; transition: border-color 0.15s; }
+  .composer:focus-within { border-color: var(--accent-dim); }
+  textarea { flex: 1; background: transparent; border: none; outline: none; resize: none; color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; padding: 8px 0; max-height: 140px; }
+  textarea::placeholder { color: var(--ink-faint); }
+  .send { background: var(--accent); color: #07140e; border: none; border-radius: 9px; width: 38px; height: 38px; cursor: pointer; display: grid; place-items: center; flex-shrink: 0; transition: opacity 0.15s, transform 0.1s; }
+  .send:hover:not(:disabled) { transform: translateY(-1px); }
+  .send:disabled { opacity: 0.35; cursor: not-allowed; }
+  .send svg { width: 18px; height: 18px; }
+  .err { color: var(--danger); }
+  .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); color: var(--ink); font-size: 13px; padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity 0.25s; pointer-events: none; z-index: 50; }
+  .toast.show { opacity: 1; }
+  @media (max-width: 760px) { .sidebar { display: none; } }
+</style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="side-head">
+      <div class="brand">grounded<span class="dot">.</span></div>
+      <div class="side-sub">chat with your documents</div>
+    </div>
+    <div class="lib-label">Library <span class="count" id="docCount">0</span></div>
+    <div class="doc-list" id="docList"></div>
+    <label class="upload-zone" id="uploadZone">
+      <div class="up-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+      <div class="up-main" id="upMain">Add a PDF</div>
+      <div class="up-sub" id="upSub">click or drop a file</div>
+      <input type="file" id="fileInput" accept="application/pdf" hidden>
+    </label>
+  </aside>
+  <main class="main">
+    <div class="scroll" id="scroll">
+      <div class="thread" id="thread">
+        <div class="empty" id="empty">
+          <h1>Ask your documents anything.</h1>
+          <p>Every answer is retrieved from your indexed PDFs and shows the exact<br>passages it was built from. No passage, no claim.</p>
+          <div class="chips" id="chips">
+            <span class="chip">How many GPUs were used for training?</span>
+            <span class="chip">What is multi-head attention?</span>
+            <span class="chip">What optimizer did they use?</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="composer-wrap">
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Ask about your documents…"></textarea>
+        <button class="send" id="send" disabled aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+  <div class="toast" id="toast"></div>
+<script>
+  const API = "http://127.0.0.1:8000";
+  const thread = document.getElementById("thread");
+  const scroll = document.getElementById("scroll");
+  const input = document.getElementById("input");
+  const send = document.getElementById("send");
+  const empty = document.getElementById("empty");
+  const docList = document.getElementById("docList");
+  const docCount = document.getElementById("docCount");
+  const fileInput = document.getElementById("fileInput");
+  const uploadZone = document.getElementById("uploadZone");
+  const upMain = document.getElementById("upMain");
+  const upSub = document.getElementById("upSub");
+  const toastEl = document.getElementById("toast");
+  function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+  function toast(msg){ toastEl.textContent=msg; toastEl.classList.add("show"); setTimeout(()=>toastEl.classList.remove("show"),2600); }
+  async function loadDocs(){
+    try { const res = await fetch(API + "/documents"); const data = await res.json(); renderDocs(data.documents || []); }
+    catch { renderDocs([]); }
+  }
+  function renderDocs(docs){
+    docCount.textContent = docs.length;
+    if(!docs.length){ docList.innerHTML = `<div class="doc-empty">No documents yet.<br>Add a PDF to start.</div>`; return; }
+    docList.innerHTML = docs.map(d => `
+      <div class="doc">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <div class="meta"><div class="name" title="${esc(d.source)}">${esc(d.source)}</div><div class="chunks">${d.chunks} chunks</div></div>
+        <button class="del" data-src="${esc(d.source)}" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+      </div>`).join("");
+  }
+  docList.addEventListener("click", async (e)=>{
+    const btn = e.target.closest(".del"); if(!btn) return;
+    const src = btn.dataset.src;
+    if(!confirm(`Remove "${src}" from the library?`)) return;
+    try { const res = await fetch(API + "/documents/" + encodeURIComponent(src), { method: "DELETE" }); const data = await res.json(); toast(`Removed ${src} (${data.deleted_chunks} chunks)`); loadDocs(); }
+    catch { toast("Couldn't delete. Is the server running?"); }
+  });
+  async function uploadFile(file){
+    if(!file) return;
+    if(!file.name.toLowerCase().endsWith(".pdf")){ toast("Only PDF files are accepted."); return; }
+    uploadZone.classList.add("busy"); upMain.textContent = "Processing…"; upSub.textContent = file.name;
+    const fd = new FormData(); fd.append("file", file);
+    try {
+      const res = await fetch(API + "/upload", { method: "POST", body: fd });
+      if(!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e.detail || res.status); }
+      const data = await res.json(); toast(`Added ${data.source} (${data.chunks} chunks)`); loadDocs();
+    } catch(err) { toast("Upload failed: " + err.message); }
+    finally { uploadZone.classList.remove("busy"); upMain.textContent = "Add a PDF"; upSub.textContent = "click or drop a file"; fileInput.value = ""; }
+  }
+  fileInput.addEventListener("change", ()=> uploadFile(fileInput.files[0]));
+  ["dragenter","dragover"].forEach(ev => uploadZone.addEventListener(ev, e=>{ e.preventDefault(); uploadZone.classList.add("drag"); }));
+  ["dragleave","drop"].forEach(ev => uploadZone.addEventListener(ev, e=>{ e.preventDefault(); uploadZone.classList.remove("drag"); }));
+  uploadZone.addEventListener("drop", e=> uploadFile(e.dataTransfer.files[0]));
+  function autosize(){ input.style.height="auto"; input.style.height=Math.min(input.scrollHeight,140)+"px"; }
+  function toggleSend(){ send.disabled = input.value.trim()===""; }
+  input.addEventListener("input", ()=>{ autosize(); toggleSend(); });
+  input.addEventListener("keydown", e=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); submit(); }});
+  send.addEventListener("click", submit);
+  document.getElementById("chips").addEventListener("click", e=>{ if(e.target.classList.contains("chip")){ input.value=e.target.textContent; autosize(); toggleSend(); submit(); } });
+  function addUser(text){ if(empty && empty.parentNode) empty.remove(); const t=document.createElement("div"); t.className="turn"; t.innerHTML=`<div class="who">you</div><div class="bubble-user">${esc(text)}</div>`; thread.appendChild(t); scroll.scrollTop=scroll.scrollHeight; }
+  function addThinking(){ const t=document.createElement("div"); t.className="turn"; t.id="thinking-turn"; t.innerHTML=`<div class="who">grounded</div><div class="thinking"><span></span><span></span><span></span></div>`; thread.appendChild(t); scroll.scrollTop=scroll.scrollHeight; }
+  function addAnswer(answer, sources){
+    const old=document.getElementById("thinking-turn"); if(old) old.remove();
+    const t=document.createElement("div"); t.className="turn"; let srcHtml="";
+    if(sources && sources.length){ const items=sources.map((s,i)=>`<div class="source"><span class="num">SOURCE ${i+1}</span>${esc(s.trim())}</div>`).join(""); srcHtml=`<details class="sources"><summary>${sources.length} source passage${sources.length>1?"s":""}</summary><div class="source-list">${items}</div></details>`; }
+    t.innerHTML=`<div class="who">grounded</div><div class="answer">${esc(answer)}</div>${srcHtml}`;
+    thread.appendChild(t); scroll.scrollTop=scroll.scrollHeight;
+  }
+  async function submit(){
+    const q=input.value.trim(); if(!q) return;
+    addUser(q); input.value=""; autosize(); toggleSend(); addThinking();
+    try { const res=await fetch(API+"/query",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q})}); if(!res.ok) throw new Error("HTTP "+res.status); const data=await res.json(); addAnswer(data.answer, data.sources); }
+    catch { const old=document.getElementById("thinking-turn"); if(old) old.remove(); const t=document.createElement("div"); t.className="turn"; t.innerHTML=`<div class="who">grounded</div><div class="answer err">Couldn't reach the API. Make sure the server is running on localhost:8000.</div>`; thread.appendChild(t); scroll.scrollTop=scroll.scrollHeight; }
+  }
+  loadDocs(); input.focus();
+</script>
+</body>
+</html>

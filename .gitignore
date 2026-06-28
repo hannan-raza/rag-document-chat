@@ -1,0 +1,15 @@
+# secrets
+.env
+
+# python
+venv/
+__pycache__/
+*.pyc
+
+# large files / data
+transformer.pdf
+*.pdf
+
+# OS
+.DS_Store
+evaluation/
