@@ -13,3 +13,4 @@ transformer.pdf
 # OS
 .DS_Store
 evaluation/
+rag-frontend/

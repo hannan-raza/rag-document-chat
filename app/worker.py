@@ -1,13 +1,13 @@
 """
 Async ingestion worker. Polls SQS for messages, downloads PDFs from S3,
-chunks + embeds + stores them. Handles 'ingest' and 'delete' actions.
+chunks + embeds + stores them (tagged with the owner's user_id).
+Handles 'ingest' and 'delete' actions.
 Run from project root:  python -m app.worker
 """
 import os
 import json
 import boto3
 import numpy as np
-from pgvector.psycopg import register_vector
 from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
@@ -21,7 +21,6 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 QUEUE_URL = os.getenv("QUEUE_URL")
 AWS_PROFILE = os.getenv("AWS_PROFILE")
 
-# AWS clients for S3 + SQS (embeddings come from app.providers)
 if AWS_PROFILE:
     session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
 else:
@@ -29,18 +28,21 @@ else:
 sqs = session.client("sqs")
 s3 = session.client("s3")
 
-def delete_source(source):
-    print(f"  Deleting existing chunks for source='{source}'...")
+def delete_source(source, user_id):
+    print(f"  Deleting existing chunks for source='{source}' (user={user_id})...")
     conn = connect()
-    result = conn.execute("DELETE FROM documents WHERE source = %s;", (source,))
+    result = conn.execute(
+        "DELETE FROM documents WHERE source = %s AND user_id = %s;",
+        (source, user_id),
+    )
     deleted = result.rowcount
     conn.commit()
     conn.close()
     print(f"  Deleted {deleted} chunks.")
     return deleted
 
-def ingest_document(bucket, key):
-    print(f"  Downloading s3://{bucket}/{key} ...")
+def ingest_document(bucket, key, user_id):
+    print(f"  Downloading s3://{bucket}/{key} (user={user_id}) ...")
     local_path = "/tmp/" + key.replace("/", "_")
     s3.download_file(bucket, key, local_path)
 
@@ -58,29 +60,33 @@ def ingest_document(bucket, key):
     chunks = splitter.split_text(full_text)
     print(f"  {len(chunks)} chunks.")
 
-    # refresh: remove this source's old chunks first (not the whole table)
-    delete_source(key)
+    # refresh: remove this user's old chunks for this source first
+    delete_source(key, user_id)
 
     conn = connect()
     for i, chunk in enumerate(chunks):
         vector = embed(chunk)
         conn.execute(
-            "INSERT INTO documents (content, embedding, source) VALUES (%s, %s, %s)",
-            (chunk, np.array(vector), key),
+            "INSERT INTO documents (content, embedding, source, user_id) "
+            "VALUES (%s, %s, %s, %s)",
+            (chunk, np.array(vector), key, user_id),
         )
         if i % 10 == 0:
             print(f"    embedded {i}/{len(chunks)}")
             conn.commit()
     conn.commit()
     conn.close()
-    print(f"  Done: {len(chunks)} chunks stored for source='{key}'.")
+    print(f"  Done: {len(chunks)} chunks stored for source='{key}' (user={user_id}).")
 
 def handle_message(body):
     action = body.get("action", "ingest")
+    user_id = body.get("user_id")
+    if not user_id:
+        raise ValueError("Message missing user_id — cannot process without owner.")
     if action == "ingest":
-        ingest_document(body["bucket"], body["key"])
+        ingest_document(body["bucket"], body["key"], user_id)
     elif action == "delete":
-        delete_source(body["key"])
+        delete_source(body["key"], user_id)
     else:
         raise ValueError(f"Unknown action: {action}")
 
