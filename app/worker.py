@@ -8,12 +8,17 @@ import os
 import json
 import boto3
 import numpy as np
-from pypdf import PdfReader
+import pdfplumber
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 
 from app.providers import embed
 from app.db import connect
+
+# Reject extractions where an abnormal share of tokens are lone characters.
+# Clean prose sits near 0.006; a PDF mangled into "Z A I N  M U N I R" hits ~0.96.
+# A generous 0.30 floor never trips on real text but catches character-spacing.
+MAX_SINGLE_CHAR_RATIO = 0.30
 
 load_dotenv()
 
@@ -41,16 +46,44 @@ def delete_source(source, user_id):
     print(f"  Deleted {deleted} chunks.")
     return deleted
 
-def ingest_document(bucket, key, user_id):
-    print(f"  Downloading s3://{bucket}/{key} (user={user_id}) ...")
-    local_path = "/tmp/" + key.replace("/", "_")
-    s3.download_file(bucket, key, local_path)
+def extract_pdf_text(path):
+    """Extract text from a PDF with pdfplumber. Unlike pypdf, it handles the
+    glyph-positioning encodings that otherwise come out character-spaced
+    ('Z A I N  M U N I R'), which silently poisons both keyword and vector search."""
+    text = ""
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text += (page.extract_text() or "") + "\n"
+    return text
 
+
+def single_char_ratio(text):
+    """Fraction of whitespace-separated tokens that are a single alphabetic
+    character. Near 0 for clean prose; ~1 for character-spaced garbage. Used as
+    an extraction-quality gate so we never index mangled text again."""
+    tokens = text.split()
+    if not tokens:
+        return 0.0
+    singles = sum(1 for t in tokens if len(t) == 1 and t.isalpha())
+    return singles / len(tokens)
+
+
+def ingest_from_path(local_path, key, user_id):
+    """Extract -> quality-gate -> chunk -> (replace) -> embed -> store.
+    Separated from the S3 download so ingestion can be tested on a local file."""
     print("  Extracting text...")
-    reader = PdfReader(local_path)
-    full_text = ""
-    for page in reader.pages:
-        full_text += (page.extract_text() or "") + "\n"
+    full_text = extract_pdf_text(local_path)
+
+    # Quality gate: refuse to index a corrupted (character-spaced) extraction.
+    # We check BEFORE deleting existing chunks, so a bad re-ingest never wipes
+    # good data — the old chunks stay and nothing garbage is stored.
+    ratio = single_char_ratio(full_text)
+    if ratio > MAX_SINGLE_CHAR_RATIO:
+        raise ValueError(
+            f"Refusing to ingest '{key}': {ratio:.0%} of tokens are single "
+            f"characters (threshold {MAX_SINGLE_CHAR_RATIO:.0%}) — the PDF text "
+            f"looks character-spaced/corrupted. Nothing was stored."
+        )
 
     print("  Chunking...")
     splitter = RecursiveCharacterTextSplitter(
@@ -58,7 +91,7 @@ def ingest_document(bucket, key, user_id):
         separators=["\n\n", "\n", ". ", " ", ""],
     )
     chunks = splitter.split_text(full_text)
-    print(f"  {len(chunks)} chunks.")
+    print(f"  {len(chunks)} chunks (single-char ratio {ratio:.3f}).")
 
     # refresh: remove this user's old chunks for this source first
     delete_source(key, user_id)
@@ -77,6 +110,13 @@ def ingest_document(bucket, key, user_id):
     conn.commit()
     conn.close()
     print(f"  Done: {len(chunks)} chunks stored for source='{key}' (user={user_id}).")
+
+
+def ingest_document(bucket, key, user_id):
+    print(f"  Downloading s3://{bucket}/{key} (user={user_id}) ...")
+    local_path = "/tmp/" + key.replace("/", "_")
+    s3.download_file(bucket, key, local_path)
+    ingest_from_path(local_path, key, user_id)
 
 def handle_message(body):
     action = body.get("action", "ingest")

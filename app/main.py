@@ -2,20 +2,15 @@
 FastAPI app: chat query endpoint + document management (upload/list/delete).
 """
 import os
-import io
 import asyncio
 import boto3
 import json
-import numpy as np
-from pypdf import PdfReader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from fastapi import FastAPI, UploadFile, File, HTTPException,Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from app.datasets import create_dataset, query_dataset
 
-from app.providers import embed
 from app.db import connect
 from app.rag import retrieve, answer,rewrite_query
 from app.ask import ask
@@ -40,31 +35,6 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
-
-def ingest_pdf_bytes(pdf_bytes, source):
-    """Chunk, embed, and store a PDF (raw bytes), tagged by source. Refreshes if re-uploaded."""
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    full_text = ""
-    for page in reader.pages:
-        full_text += (page.extract_text() or "") + "\n"
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500, chunk_overlap=100,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
-    chunks = splitter.split_text(full_text)
-
-    conn = connect()
-    conn.execute("DELETE FROM documents WHERE source = %s;", (source,))
-    for chunk in chunks:
-        vector = embed(chunk)
-        conn.execute(
-            "INSERT INTO documents (content, embedding, source) VALUES (%s, %s, %s)",
-            (chunk, np.array(vector), source),
-        )
-    conn.commit()
-    conn.close()
-    return len(chunks)
 
 def delete_dataset(user_id, dataset_id):
     """Drop a user's dataset: its data table + its registry row, atomically.
