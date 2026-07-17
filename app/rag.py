@@ -7,29 +7,43 @@ Provider-agnostic: embeddings and generation come from app.providers.
 from app.providers import embed, generate
 from app.db import connect
 
-# autocommit so read queries don't hold open transactions (avoids idle-in-transaction locks)
-conn = connect()
-conn.autocommit = True
+# NOTE: each search opens its OWN short-lived connection (autocommit, closed in
+# finally). We deliberately do NOT keep a module-level shared connection: these
+# functions run concurrently across threads (retrieve is called via
+# asyncio.to_thread in the unified /ask path, and sync /query runs in FastAPI's
+# threadpool), and a single psycopg connection is not safe for concurrent use.
+# A per-call connection also avoids the idle-in-transaction / zombie-connection
+# issue (CLAUDE.md §5).
 
 def vector_search(question, user_id, k=10):
     q_vec = embed(question)
-    rows = conn.execute(
-        "SELECT id, content FROM documents "
-        "WHERE user_id = %s "
-        "ORDER BY embedding <=> %s LIMIT %s",
-        (user_id, q_vec, k),
-    ).fetchall()
+    conn = connect()
+    conn.autocommit = True
+    try:
+        rows = conn.execute(
+            "SELECT id, content FROM documents "
+            "WHERE user_id = %s "
+            "ORDER BY embedding <=> %s LIMIT %s",
+            (user_id, q_vec, k),
+        ).fetchall()
+    finally:
+        conn.close()
     return [(r[0], r[1]) for r in rows]
 
 def keyword_search(question, user_id, k=10):
-    rows = conn.execute(
-        "SELECT id, content FROM documents "
-        "WHERE user_id = %s "
-        "AND to_tsvector('english', content) @@ plainto_tsquery('english', %s) "
-        "ORDER BY ts_rank(to_tsvector('english', content), "
-        "plainto_tsquery('english', %s)) DESC LIMIT %s",
-        (user_id, question, question, k),
-    ).fetchall()
+    conn = connect()
+    conn.autocommit = True
+    try:
+        rows = conn.execute(
+            "SELECT id, content FROM documents "
+            "WHERE user_id = %s "
+            "AND to_tsvector('english', content) @@ plainto_tsquery('english', %s) "
+            "ORDER BY ts_rank(to_tsvector('english', content), "
+            "plainto_tsquery('english', %s)) DESC LIMIT %s",
+            (user_id, question, question, k),
+        ).fetchall()
+    finally:
+        conn.close()
     return [(r[0], r[1]) for r in rows]
 
 def hybrid_search(question, user_id, k=15, rrf_k=60):

@@ -1,0 +1,4 @@
+# Dev/test-only dependencies. NOT installed into the Fargate image
+# (production uses requirements.txt). Install locally with:
+#   pip install -r requirements-dev.txt
+pytest
