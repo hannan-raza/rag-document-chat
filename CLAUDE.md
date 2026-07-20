@@ -171,6 +171,21 @@ Build order (implement + test each before the next):
   skip phrasing for single-value results.
 - Relevance threshold: retrieval always returns top-k, so irrelevant "sources"
   can show when the answer is "I don't know". Add a similarity floor / hide sources.
+- **Streaming `/ask` — before real production load (multi-tenant concurrency):**
+  the SSE path (`ask_stream` + `_aiter_in_thread` in `app/ask.py`) works but
+  isn't hardened for many concurrent streams. Three known items (fine for current
+  use, matter under load):
+  - *Executor isolation:* each stream's `generate_stream` pump runs on the shared
+    default ThreadPoolExecutor — the same pool `asyncio.to_thread` uses for
+    `retrieve`/`run_dataset_query`. Enough concurrent streams can starve other
+    users' retrieval. Give streaming its own executor.
+  - *Cancellation on disconnect:* on client disconnect, `_aiter_in_thread`'s
+    `finally: await task` blocks until the LLM fully generates, because the sync
+    `generate_stream` is never `.close()`d. Close the generator / cancel the pump
+    on `GeneratorExit` so the thread frees immediately.
+  - *Queue backpressure:* the bridge uses an unbounded `asyncio.Queue`; a slow
+    client lets the whole answer buffer in memory. Bound the queue so the pump
+    blocks when the consumer falls behind.
 
 ## 10. Local run
 

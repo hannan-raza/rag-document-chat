@@ -7,13 +7,15 @@ import boto3
 import json
 from fastapi import FastAPI, UploadFile, File, HTTPException,Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from app.datasets import create_dataset, query_dataset
 
 from app.db import connect
 from app.rag import retrieve, answer,rewrite_query
-from app.ask import ask
+from app.ask import ask, ask_stream
 from app.auth import get_current_user
 
 load_dotenv()
@@ -93,16 +95,38 @@ def query(q: Query, user_id: str = Depends(get_current_user)):
 
     return {"question": q.question, "answer": answer_text, "sources": chunks}
 
+async def _sse(events):
+    """Serialize the orchestrator's event dicts as Server-Sent Events, then a
+    terminal [DONE] sentinel so the client knows the stream is complete.
+    Uses jsonable_encoder (the same encoder FastAPI applies to the non-streaming
+    JSON response) so Decimal/datetime cell values in SQL rows encode identically
+    across both paths — as JSON numbers/ISO strings, not str()-coerced."""
+    async for ev in events:
+        yield f"data: {json.dumps(jsonable_encoder(ev))}\n\n"
+    yield "data: [DONE]\n\n"
+
 @app.post("/ask")
-async def ask_unified(q: Query, user_id: str = Depends(get_current_user)):
+async def ask_unified(q: Query, stream: bool = False,
+                      user_id: str = Depends(get_current_user)):
     """Unified chat over the user's ENTIRE knowledge base (all PDFs + all CSVs).
     Thin: resolve any follow-up to a standalone question, then delegate to the
     orchestrator, which runs the RAG and CSV-SQL paths concurrently and
     synthesizes one answer. Scoped to this user throughout.
+
+    ?stream=true streams the synthesis answer token-by-token as SSE (retrieval,
+    picking, and SQL still run first); otherwise returns the full JSON at once.
     """
     history = [{"role": t.role, "content": t.content} for t in q.history]
     # rewrite_query is a blocking LLM call — keep the event loop free
     standalone = await asyncio.to_thread(rewrite_query, q.question, history)
+    if stream:
+        return StreamingResponse(
+            # echo_question = the ORIGINAL question, so the streamed metadata
+            # matches the non-streaming response's top-level "question" field.
+            _sse(ask_stream(user_id, standalone, echo_question=q.question)),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     result = await ask(user_id, standalone)
     return {"question": q.question, **result}
 
