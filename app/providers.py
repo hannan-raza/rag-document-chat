@@ -42,6 +42,25 @@ if PROVIDER == "openai":
         )
         return resp.choices[0].message.content
 
+    def generate_stream(prompt, max_tokens=400, temperature=0):
+        """Streaming twin of generate(): yields text deltas as they arrive.
+        Synchronous generator (the provider layer stays sync); callers that need
+        it on an event loop should bridge it through a thread."""
+        stream = _client.chat.completions.create(
+            model=GEN_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        for chunk in stream:
+            # trailing/keepalive chunks can have empty choices or a None delta
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
 elif PROVIDER == "bedrock":
     import boto3
     if AWS_PROFILE:
@@ -66,6 +85,24 @@ elif PROVIDER == "bedrock":
         })
         resp = _bedrock.invoke_model(modelId=GEN_MODEL, body=body)
         return json.loads(resp["body"].read())["content"][0]["text"]
+
+    def generate_stream(prompt, max_tokens=400, temperature=0):
+        """Streaming twin of generate(): yields text deltas as they arrive.
+        Synchronous generator (the provider layer stays sync); callers that need
+        it on an event loop should bridge it through a thread."""
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "user", "content": prompt}],
+        })
+        resp = _bedrock.invoke_model_with_response_stream(modelId=GEN_MODEL, body=body)
+        for event in resp["body"]:
+            chunk = json.loads(event["chunk"]["bytes"])
+            if chunk.get("type") == "content_block_delta":
+                text = chunk["delta"].get("text")
+                if text:
+                    yield text
 
 else:
     raise ValueError(f"Unknown LLM_PROVIDER: {PROVIDER}. Use 'openai' or 'bedrock'.")
